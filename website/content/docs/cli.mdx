@@ -116,7 +116,33 @@ Use `dbdev install` to install a local TLE package into the connected database:
 dbdev install --connection "postgresql://postgres:postgres@localhost:54322/postgres" path --directory ./pg_idkit
 ```
 
+Or for a local package like `supa_privacy` or `supa_profile`:
+
+```bash
+dbdev install --connection "postgresql://postgres:postgres@localhost:54322/postgres" path --directory ./supa_privacy
+```
+
 The `path` source defaults to the current directory when `--directory` is omitted.
+
+### Enable an Installed Package
+
+`dbdev install` loads a package into `pg_tle` but does not enable it. Use `dbdev create` to run `CREATE EXTENSION` against the connected database:
+
+```bash
+dbdev create --connection "postgresql://postgres:postgres@localhost:54322/postgres" --package pg_idkit
+```
+
+| Flag | Description |
+| --- | --- |
+| `--connection` | PostgreSQL connection string. Required. |
+| `--package` | Name of the extension to enable. Required. |
+| `--schema` | Schema to create the extension in. |
+| `--version` | Specific version to enable. Defaults to the package's `default_version`. |
+| `--cascade` | Automatically enable any extensions this one requires. |
+
+```bash
+dbdev create --connection "postgresql://postgres:postgres@localhost:54322/postgres" --package pg_idkit --schema extensions --version 0.2.0 --cascade
+```
 
 ### List Installed Package Versions
 

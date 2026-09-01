@@ -22,87 +22,26 @@ import {
   Calendar,
   Layers,
   User,
-  Tag
+  Tag,
 } from 'lucide-react'
-import supabase from '~/lib/supabase'
+import {
+  AllPackagesResponse,
+  useAllPackagesQuery,
+} from '~/data/packages/all-packages-query'
 
-export interface Package {
-  id: string
-  package_name: string
-  handle: string
-  partial_name: string
-  latest_version: string
-  description_md?: string | null
-  control_description?: string | null
-  control_requires?: string[] | null
-  created_at: string
-  default_version?: string | null
-  package_alias?: string | null
-}
+type Package = AllPackagesResponse[number]
 
-// Default fallback catalog for offline/local development when database is unseeded
-const FALLBACK_PACKAGES: Package[] = [
-  {
-    id: '1',
-    package_name: 'olirice-index_advisor',
-    handle: 'olirice',
-    partial_name: 'index_advisor',
-    latest_version: '0.2.0',
-    control_description: 'Query index advisor for PostgreSQL',
-    control_requires: [],
-    created_at: '2023-08-30T08:32:55Z',
-    package_alias: 'olirice@index_advisor'
-  },
-  {
-    id: '2',
-    package_name: 'burggraf-pg_headerkit',
-    handle: 'burggraf',
-    partial_name: 'pg_headerkit',
-    latest_version: '1.0.0',
-    control_description: 'HTTP request and response header parsing toolkit',
-    control_requires: [],
-    created_at: '2023-03-31T14:59:34Z',
-    package_alias: 'burggraf@pg_headerkit'
-  },
-  {
-    id: '3',
-    package_name: 'langchain-embedding_search',
-    handle: 'langchain',
-    partial_name: 'embedding_search',
-    latest_version: '1.1.0',
-    control_description: 'Vector embeddings search utilities for LangChain',
-    control_requires: ['vector'],
-    created_at: '2023-05-08T17:59:52Z',
-    package_alias: 'langchain@embedding_search'
-  },
-  {
-    id: '4',
-    package_name: 'langchain-hybrid_search',
-    handle: 'langchain',
-    partial_name: 'hybrid_search',
-    latest_version: '1.1.0',
-    control_description: 'Hybrid keyword and vector semantic search engine',
-    control_requires: ['vector', 'pg_trgm'],
-    created_at: '2023-05-08T17:59:53Z',
-    package_alias: 'langchain@hybrid_search'
-  },
-  {
-    id: '5',
-    package_name: 'michelp-adminpack',
-    handle: 'michelp',
-    partial_name: 'adminpack',
-    latest_version: '0.0.2',
-    control_description: 'Administrative support functions package',
-    control_requires: [],
-    created_at: '2023-12-07T11:29:42Z',
-    package_alias: 'michelp@adminpack'
-  }
-]
+// Sorts "10.0.0" above "9.0.0", which a plain localeCompare gets backwards.
+const versionCollator = new Intl.Collator(undefined, { numeric: true })
 
 const PackagesPage: NextPageWithLayout = () => {
-  const [packages, setPackages] = useState<Package[]>(FALLBACK_PACKAGES)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const {
+    data: packages = [],
+    isPending: loading,
+    isError,
+    error,
+    refetch,
+  } = useAllPackagesQuery()
 
   // Filter & Search states
   const [searchQuery, setSearchQuery] = useState('')
@@ -110,7 +49,9 @@ const PackagesPage: NextPageWithLayout = () => {
   const [selectedRequires, setSelectedRequires] = useState('all')
 
   // Sorting state
-  const [sortField, setSortField] = useState<'package_name' | 'handle' | 'latest_version' | 'created_at'>('created_at')
+  const [sortField, setSortField] = useState<
+    'package_name' | 'handle' | 'latest_version' | 'created_at'
+  >('created_at')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
 
   // Pagination state
@@ -119,54 +60,6 @@ const PackagesPage: NextPageWithLayout = () => {
 
   // Copy success animation state per package
   const [copiedPackageId, setCopiedPackageId] = useState<string | null>(null)
-
-  // Fetch packages from configured Supabase client or fallback
-  const fetchPackages = async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const { data, error: dbError } = await supabase
-        .from('packages')
-        .select('*')
-        .order('created_at', { ascending: false })
-
-      if (!dbError && data && data.length > 0) {
-        setPackages(data as any)
-        return
-      }
-
-      // Try public registry search endpoint
-      const response = await fetch('https://api.database.dev/rest/v1/rpc/search_packages', {
-        method: 'POST',
-        headers: {
-          'accept': '*/*',
-          'apikey': 'sb_publishable_044WUFe74ISl9ARZlSkDAQ_3jFCCRle',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ handle: '' }),
-      })
-
-      if (response.ok) {
-        const publicData = await response.json()
-        if (Array.isArray(publicData) && publicData.length > 0) {
-          setPackages(publicData)
-          return
-        }
-      }
-      
-      // Use fallback if database has no rows
-      setPackages(FALLBACK_PACKAGES)
-    } catch {
-      // Gracefully maintain fallback catalog on network failure
-      setPackages(FALLBACK_PACKAGES)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    fetchPackages()
-  }, [])
 
   // Copy install command to clipboard
   const handleCopyCommand = async (pkg: Package) => {
@@ -209,16 +102,20 @@ const PackagesPage: NextPageWithLayout = () => {
       const matchesSearch =
         !query ||
         pkg.package_name.toLowerCase().includes(query) ||
-        (pkg.package_alias && pkg.package_alias.toLowerCase().includes(query)) ||
+        (pkg.package_alias &&
+          pkg.package_alias.toLowerCase().includes(query)) ||
         pkg.handle.toLowerCase().includes(query) ||
-        (pkg.control_description && pkg.control_description.toLowerCase().includes(query)) ||
+        (pkg.control_description &&
+          pkg.control_description.toLowerCase().includes(query)) ||
         (pkg.description_md && pkg.description_md.toLowerCase().includes(query))
 
-      const matchesPublisher = selectedPublisher === 'all' || pkg.handle === selectedPublisher
+      const matchesPublisher =
+        selectedPublisher === 'all' || pkg.handle === selectedPublisher
 
       const matchesRequires =
         selectedRequires === 'all' ||
-        (Array.isArray(pkg.control_requires) && pkg.control_requires.includes(selectedRequires))
+        (Array.isArray(pkg.control_requires) &&
+          pkg.control_requires.includes(selectedRequires))
 
       return matchesSearch && matchesPublisher && matchesRequires
     })
@@ -235,6 +132,12 @@ const PackagesPage: NextPageWithLayout = () => {
         return sortDirection === 'asc'
           ? new Date(aVal).getTime() - new Date(bVal).getTime()
           : new Date(bVal).getTime() - new Date(aVal).getTime()
+      }
+
+      if (sortField === 'latest_version') {
+        return sortDirection === 'asc'
+          ? versionCollator.compare(aVal, bVal)
+          : versionCollator.compare(bVal, aVal)
       }
 
       if (typeof aVal === 'string' && typeof bVal === 'string') {
@@ -297,8 +200,9 @@ const PackagesPage: NextPageWithLayout = () => {
             Explore Extensions
           </h1>
           <p className="text-base md:text-lg text-muted-foreground max-w-3xl leading-relaxed">
-            Discover, filter, and search packages for PostgreSQL Trusted Language Extensions (pg_tle). 
-            Install extensions in your local migrations or client with ease.
+            Discover, filter, and search packages for PostgreSQL Trusted
+            Language Extensions (pg_tle). Install extensions in your local
+            migrations or client with ease.
           </p>
         </div>
 
@@ -310,7 +214,9 @@ const PackagesPage: NextPageWithLayout = () => {
                 <SlidersHorizontal className="w-4 h-4 text-muted-foreground" />
                 <span>Search and Filters</span>
               </div>
-              {(searchQuery || selectedPublisher !== 'all' || selectedRequires !== 'all') && (
+              {(searchQuery ||
+                selectedPublisher !== 'all' ||
+                selectedRequires !== 'all') && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -374,11 +280,15 @@ const PackagesPage: NextPageWithLayout = () => {
         </Card>
 
         {/* Error State */}
-        {error && (
+        {isError && (
           <Card className="mb-8 border-destructive/50 bg-destructive/10 p-6 text-center max-w-2xl mx-auto">
-            <h3 className="text-base font-bold text-destructive mb-2">Failed to load packages</h3>
-            <p className="text-sm text-muted-foreground mb-4">{error}</p>
-            <Button onClick={fetchPackages} variant="outline" size="sm">
+            <h3 className="text-base font-bold text-destructive mb-2">
+              Failed to load packages
+            </h3>
+            <p className="text-sm text-muted-foreground mb-4">
+              {error.message}
+            </p>
+            <Button onClick={() => refetch()} variant="outline" size="sm">
               Try Again
             </Button>
           </Card>
@@ -393,7 +303,10 @@ const PackagesPage: NextPageWithLayout = () => {
             </div>
             <div className="divide-y divide-border">
               {[...Array(5)].map((_, idx) => (
-                <div key={idx} className="p-6 flex flex-col md:flex-row gap-6 animate-pulse">
+                <div
+                  key={idx}
+                  className="p-6 flex flex-col md:flex-row gap-6 animate-pulse"
+                >
                   <div className="flex-1 space-y-3">
                     <div className="h-5 w-1/3 bg-muted rounded" />
                     <div className="h-4 w-2/3 bg-muted rounded" />
@@ -409,7 +322,7 @@ const PackagesPage: NextPageWithLayout = () => {
         )}
 
         {/* Data Table */}
-        {!loading && (
+        {!loading && !isError && (
           <Card className="overflow-hidden border-border bg-card">
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
@@ -422,9 +335,12 @@ const PackagesPage: NextPageWithLayout = () => {
                       <div className="flex items-center gap-1.5">
                         <PackageIcon className="w-3.5 h-3.5" />
                         <span>Package Name</span>
-                        {sortField === 'package_name' && (
-                          sortDirection === 'asc' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />
-                        )}
+                        {sortField === 'package_name' &&
+                          (sortDirection === 'asc' ? (
+                            <ChevronUp className="w-3.5 h-3.5" />
+                          ) : (
+                            <ChevronDown className="w-3.5 h-3.5" />
+                          ))}
                       </div>
                     </th>
                     <th
@@ -434,9 +350,12 @@ const PackagesPage: NextPageWithLayout = () => {
                       <div className="flex items-center gap-1.5">
                         <User className="w-3.5 h-3.5" />
                         <span>Publisher</span>
-                        {sortField === 'handle' && (
-                          sortDirection === 'asc' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />
-                        )}
+                        {sortField === 'handle' &&
+                          (sortDirection === 'asc' ? (
+                            <ChevronUp className="w-3.5 h-3.5" />
+                          ) : (
+                            <ChevronDown className="w-3.5 h-3.5" />
+                          ))}
                       </div>
                     </th>
                     <th className="py-4 px-6 w-1/3">Description</th>
@@ -459,9 +378,12 @@ const PackagesPage: NextPageWithLayout = () => {
                       <div className="flex items-center gap-1.5 font-semibold">
                         <Calendar className="w-3.5 h-3.5" />
                         <span>Created</span>
-                        {sortField === 'created_at' && (
-                          sortDirection === 'asc' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />
-                        )}
+                        {sortField === 'created_at' &&
+                          (sortDirection === 'asc' ? (
+                            <ChevronUp className="w-3.5 h-3.5" />
+                          ) : (
+                            <ChevronDown className="w-3.5 h-3.5" />
+                          ))}
                       </div>
                     </th>
                     <th className="py-4 px-6 text-right">Actions</th>
@@ -470,12 +392,24 @@ const PackagesPage: NextPageWithLayout = () => {
                 <tbody className="divide-y divide-border text-sm">
                   {paginatedPackages.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-12 text-center text-muted-foreground">
+                      <td
+                        colSpan={7}
+                        className="py-12 text-center text-muted-foreground"
+                      >
                         <div className="flex flex-col items-center justify-center space-y-3">
                           <Search className="w-8 h-8 text-muted-foreground/60" />
-                          <span className="font-semibold text-lg text-foreground">No packages found</span>
-                          <span className="text-sm text-muted-foreground">Try adjusting your filters or search query.</span>
-                          <Button variant="outline" size="sm" onClick={handleResetFilters} className="mt-2">
+                          <span className="font-semibold text-lg text-foreground">
+                            No packages found
+                          </span>
+                          <span className="text-sm text-muted-foreground">
+                            Try adjusting your filters or search query.
+                          </span>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleResetFilters}
+                            className="mt-2"
+                          >
                             Clear All Filters
                           </Button>
                         </div>
@@ -514,21 +448,34 @@ const PackagesPage: NextPageWithLayout = () => {
                         </td>
                         <td className="py-4 px-6 text-muted-foreground leading-relaxed max-w-sm truncate">
                           {pkg.control_description || pkg.description_md ? (
-                            <p className="line-clamp-2 text-xs" title={pkg.control_description || pkg.description_md || ''}>
+                            <p
+                              className="line-clamp-2 text-xs"
+                              title={
+                                pkg.control_description ||
+                                pkg.description_md ||
+                                ''
+                              }
+                            >
                               {pkg.control_description || pkg.description_md}
                             </p>
                           ) : (
-                            <span className="text-muted-foreground/60 italic text-xs">No description provided</span>
+                            <span className="text-muted-foreground/60 italic text-xs">
+                              No description provided
+                            </span>
                           )}
                         </td>
                         <td className="py-4 px-6 font-mono text-foreground">
-                          <Badge variant="outline" className="text-xs font-medium">
+                          <Badge
+                            variant="outline"
+                            className="text-xs font-medium"
+                          >
                             v{pkg.latest_version}
                           </Badge>
                         </td>
                         <td className="py-4 px-6">
                           <div className="flex flex-wrap gap-1">
-                            {Array.isArray(pkg.control_requires) && pkg.control_requires.length > 0 ? (
+                            {Array.isArray(pkg.control_requires) &&
+                            pkg.control_requires.length > 0 ? (
                               pkg.control_requires.map((req) => (
                                 <Badge
                                   key={req}
@@ -539,7 +486,9 @@ const PackagesPage: NextPageWithLayout = () => {
                                 </Badge>
                               ))
                             ) : (
-                              <span className="text-xs text-muted-foreground/60">-</span>
+                              <span className="text-xs text-muted-foreground/60">
+                                -
+                              </span>
                             )}
                           </div>
                         </td>
@@ -570,7 +519,10 @@ const PackagesPage: NextPageWithLayout = () => {
                               asChild
                               className="h-8 px-2.5"
                             >
-                              <Link href={`/${pkg.handle}/${pkg.partial_name}`} title="View package page">
+                              <Link
+                                href={`/${pkg.handle}/${pkg.partial_name}`}
+                                title="View package page"
+                              >
                                 <ExternalLink className="w-3.5 h-3.5" />
                               </Link>
                             </Button>
@@ -590,11 +542,17 @@ const PackagesPage: NextPageWithLayout = () => {
                 <span className="text-xs text-muted-foreground">
                   Showing{' '}
                   <span className="font-semibold text-foreground">
-                    {Math.min(sortedPackages.length, (currentPage - 1) * itemsPerPage + 1)}
+                    {Math.min(
+                      sortedPackages.length,
+                      (currentPage - 1) * itemsPerPage + 1
+                    )}
                   </span>{' '}
                   to{' '}
                   <span className="font-semibold text-foreground">
-                    {Math.min(sortedPackages.length, currentPage * itemsPerPage)}
+                    {Math.min(
+                      sortedPackages.length,
+                      currentPage * itemsPerPage
+                    )}
                   </span>{' '}
                   of{' '}
                   <span className="font-semibold text-foreground">
@@ -641,7 +599,14 @@ const PackagesPage: NextPageWithLayout = () => {
                         Math.abs(pageNum - currentPage) > 1
                       ) {
                         if (pageNum === 2 || pageNum === totalPages - 1) {
-                          return <span key={pageNum} className="px-1.5 text-xs text-muted-foreground">...</span>
+                          return (
+                            <span
+                              key={pageNum}
+                              className="px-1.5 text-xs text-muted-foreground"
+                            >
+                              ...
+                            </span>
+                          )
                         }
                         return null
                       }
@@ -649,7 +614,9 @@ const PackagesPage: NextPageWithLayout = () => {
                       return (
                         <Button
                           key={pageNum}
-                          variant={currentPage === pageNum ? 'default' : 'outline'}
+                          variant={
+                            currentPage === pageNum ? 'default' : 'outline'
+                          }
                           size="sm"
                           onClick={() => setCurrentPage(pageNum)}
                           className="h-8 w-8 p-0 text-xs"
