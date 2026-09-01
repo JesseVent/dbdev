@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use futures::TryStreamExt;
 use sqlx::PgConnection;
 
-use crate::commands::install::update_paths;
+use crate::util::update_paths;
 
 pub(crate) async fn list(conn: &mut PgConnection) -> anyhow::Result<()> {
     let available_extension_versions = available_extensions_versions(conn).await?;

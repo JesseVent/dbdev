@@ -1,8 +1,11 @@
 use std::collections::HashSet;
 
-use crate::{models::Payload, util::extension_versions};
+use crate::{
+    models::{Payload, UpdatePath},
+    util::{extension_versions, update_paths},
+    version_graph::VersionGraph,
+};
 use anyhow::Context;
-use futures::TryStreamExt;
 use sqlx::postgres::PgConnection;
 
 pub async fn install(payload: &Payload, mut conn: PgConnection) -> anyhow::Result<()> {
@@ -11,7 +14,16 @@ pub async fn install(payload: &Payload, mut conn: PgConnection) -> anyhow::Resul
 
     let mut installed_extension_once = !existing_versions.is_empty();
 
+    // Only the default version's own lineage is worth installing. Versions on a
+    // branch that cannot reach it would sit in the catalog implying an upgrade
+    // path that was never published (#387).
+    let graph = VersionGraph::from_payload(payload);
+    let required = graph.required_for(&payload.metadata.default_version);
+
     for install_file in &payload.install_files {
+        if !required.contains(&install_file.version) {
+            continue;
+        }
         if !existing_versions.contains(&install_file.version) {
             if installed_extension_once {
                 sqlx::query("select pgtle.install_extension_version_sql($1, $2, $3)")
@@ -49,6 +61,13 @@ pub async fn install(payload: &Payload, mut conn: PgConnection) -> anyhow::Resul
     let existing_update_paths = update_paths(&mut conn, &payload.metadata.extension_name).await?;
 
     for upgrade_file in &payload.upgrade_files {
+        if !VersionGraph::edge_is_required(
+            &required,
+            &upgrade_file.from_version,
+            &upgrade_file.to_version,
+        ) {
+            continue;
+        }
         if !existing_update_paths.contains(&UpdatePath {
             source: upgrade_file.from_version.clone(),
             target: upgrade_file.to_version.clone(),
@@ -89,28 +108,4 @@ pub async fn install(payload: &Payload, mut conn: PgConnection) -> anyhow::Resul
     }
 
     Ok(())
-}
-
-#[derive(sqlx::FromRow, PartialEq, Eq, Hash)]
-pub(crate) struct UpdatePath {
-    pub(crate) source: String,
-    pub(crate) target: String,
-}
-
-pub(crate) async fn update_paths(
-    conn: &mut PgConnection,
-    extension_name: &str,
-) -> anyhow::Result<HashSet<UpdatePath>> {
-    let mut rows = sqlx::query_as::<_, UpdatePath>(
-        "select source, target from pgtle.extension_update_paths($1) where path is not null;",
-    )
-    .bind(extension_name)
-    .fetch(conn);
-
-    let mut paths = HashSet::new();
-    while let Some(update_path) = rows.try_next().await? {
-        paths.insert(update_path);
-    }
-
-    Ok(paths)
 }

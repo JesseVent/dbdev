@@ -10,6 +10,7 @@ mod credential_store;
 mod models;
 mod secret;
 mod util;
+mod version_graph;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
