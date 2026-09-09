@@ -15,6 +15,7 @@ use crate::{
     },
     models::{Payload, UpdatePath},
     util::{create_file, extension_versions, update_paths},
+    version_graph::VersionGraph,
 };
 
 pub async fn payload_from_package(
@@ -125,6 +126,15 @@ pub async fn add(
     let mut installed_extension_once = !existing_versions.is_empty();
     let mut versions_installed_now = HashSet::new();
 
+    // Carry only the requested version's lineage into the migration. Versions on
+    // a branch that cannot reach it are dead weight in the generated SQL (#387).
+    let graph = VersionGraph::from_payload(payload);
+    let required = graph.required_for(
+        version
+            .as_deref()
+            .unwrap_or(&payload.metadata.default_version),
+    );
+
     let timestamp = Utc::now().format("%Y%m%d%H%M%S");
     let mut migration_content = String::new();
 
@@ -164,6 +174,9 @@ pub async fn add(
     let sql_separator = format!("$sql_{random_string}$");
     let comment_separator = format!("$comment_{random_string}$");
     for install_file in &payload.install_files {
+        if !required.contains(&install_file.version) {
+            continue;
+        }
         if !existing_versions.contains(&install_file.version) {
             if installed_extension_once {
                 // For subsequent versions
@@ -218,6 +231,13 @@ pub async fn add(
     };
 
     for upgrade_file in &payload.upgrade_files {
+        if !VersionGraph::edge_is_required(
+            &required,
+            &upgrade_file.from_version,
+            &upgrade_file.to_version,
+        ) {
+            continue;
+        }
         let update_path = UpdatePath {
             source: upgrade_file.from_version.clone(),
             target: upgrade_file.to_version.clone(),

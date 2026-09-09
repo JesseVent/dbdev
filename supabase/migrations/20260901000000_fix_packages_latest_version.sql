@@ -12,6 +12,7 @@ grant update (control_description, control_relocatable, control_requires, defaul
     to authenticated;
 
 -- Update publish_package to accept repository parameter
+drop function public.publish_package(app.valid_name, varchar, bool, text[], text);
 create or replace function public.publish_package(
     package_name app.valid_name,
     package_description varchar(1000),

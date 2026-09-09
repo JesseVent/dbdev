@@ -1,13 +1,15 @@
 use crate::util;
 
 use anyhow::Context;
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug)]
 pub struct ControlFileRef {
     pub filename: String,
-    pub contents: String,
+    entries: HashMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -24,13 +26,13 @@ pub struct Metadata {
 impl Metadata {
     fn from_control_file_ref(control_file_ref: &ControlFileRef) -> anyhow::Result<Self> {
         Ok(Self {
-            extension_name: control_file_ref.extension_name()?.clone(),
-            default_version: control_file_ref.default_version()?.clone(),
-            comment: control_file_ref.comment()?.clone(),
+            extension_name: control_file_ref.extension_name()?,
+            default_version: control_file_ref.default_version()?,
+            comment: control_file_ref.comment(),
             relocatable: control_file_ref.relocatable()?,
-            requires: control_file_ref.requires()?.clone(),
-            schema: control_file_ref.schema()?.clone(),
-            repository: control_file_ref.repository()?.clone(),
+            requires: control_file_ref.requires(),
+            schema: control_file_ref.schema(),
+            repository: control_file_ref.repository(),
         })
     }
 }
@@ -225,10 +227,100 @@ impl Payload {
     }
 }
 
-use std::collections::HashMap;
+
+/// Parses a `.control` file body following the same rules as Postgres's GUC
+/// file parser (`src/backend/utils/misc/guc-file.l`):
+///
+/// - `name = value` and `name value` are both accepted; the `=` is optional.
+/// - `#` starts a comment, except inside a quoted value.
+/// - Values may be single-quoted. `''` is a literal quote, and a backslash
+///   emits the following character verbatim (`\n` is `n`, not a newline).
+/// - An unterminated quote is an error.
+fn parse_control_entries(contents: &str) -> anyhow::Result<HashMap<String, String>> {
+    let mut entries = HashMap::new();
+
+    for (lineno, line) in contents.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // The name ends at the first `=` or whitespace, whichever comes first.
+        let Some(name_end) = trimmed.find(|c: char| c == '=' || c.is_whitespace()) else {
+            return Err(anyhow::anyhow!(
+                "line {} of control file has a parameter name with no value: `{}`",
+                lineno + 1,
+                trimmed
+            ));
+        };
+
+        let key = trimmed[..name_end].trim().to_lowercase();
+        let rest = trimmed[name_end..].trim_start();
+        let rest = match rest.strip_prefix('=') {
+            Some(after_eq) => after_eq.trim_start(),
+            None => rest,
+        };
+
+        let value = if let Some(quoted) = rest.strip_prefix('\'') {
+            let mut result = String::new();
+            let mut chars = quoted.chars();
+            let mut closed = false;
+
+            while let Some(ch) = chars.next() {
+                match ch {
+                    '\'' => {
+                        // A doubled quote is a literal quote; a lone one closes.
+                        let mut lookahead = chars.clone();
+                        if lookahead.next() == Some('\'') {
+                            chars = lookahead;
+                            result.push('\'');
+                        } else {
+                            closed = true;
+                            break;
+                        }
+                    }
+                    // xqescape: the escaped character is taken literally, so
+                    // `\n` is the letter n rather than a newline.
+                    '\\' => match chars.next() {
+                        Some(escaped) => result.push(escaped),
+                        None => break,
+                    },
+                    other => result.push(other),
+                }
+            }
+
+            if !closed {
+                return Err(anyhow::anyhow!(
+                    "line {} of control file has an unterminated quoted value: `{}`",
+                    lineno + 1,
+                    trimmed
+                ));
+            }
+
+            result
+        } else {
+            // Unquoted values run to the end of the line or the first comment.
+            match rest.split_once('#') {
+                Some((before_comment, _)) => before_comment.trim().to_string(),
+                None => rest.trim().to_string(),
+            }
+        };
+
+        entries.insert(key, value);
+    }
+
+    Ok(entries)
+}
 
 impl ControlFileRef {
-    pub fn from_pathbuf(path: &Path) -> anyhow::Result<Self> {
+    fn new(filename: String, contents: &str) -> anyhow::Result<Self> {
+        Ok(Self {
+            filename,
+            entries: parse_control_entries(contents)?,
+        })
+    }
+
+    fn from_pathbuf(path: &Path) -> anyhow::Result<Self> {
         let control_file_name = path
             .file_name()
             .and_then(OsStr::to_str)
@@ -237,89 +329,11 @@ impl ControlFileRef {
 
         let control_file_body = fs::read_to_string(path).context("failed to read control file")?;
 
-        Ok(Self {
-            filename: control_file_name,
-            contents: control_file_body,
-        })
-    }
-
-    pub fn parse_entries(&self) -> HashMap<String, String> {
-        let mut entries = HashMap::new();
-
-        for line in self.contents.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-
-            if let Some((raw_key, raw_value)) = trimmed.split_once('=') {
-                let key = raw_key.trim().to_lowercase();
-                let val_str = raw_value.trim();
-
-                let parsed_val = if val_str.starts_with('\'') {
-                    let mut result = String::new();
-                    let mut chars = val_str[1..].chars().peekable();
-                    let mut closed = false;
-
-                    while let Some(ch) = chars.next() {
-                        if ch == '\'' {
-                            if chars.peek() == Some(&'\'') {
-                                // Escaped single quote via ''
-                                chars.next();
-                                result.push('\'');
-                            } else {
-                                closed = true;
-                                break;
-                            }
-                        } else if ch == '\\' {
-                            if let Some(next_ch) = chars.next() {
-                                match next_ch {
-                                    '\'' => result.push('\''),
-                                    '\\' => result.push('\\'),
-                                    'n' => result.push('\n'),
-                                    't' => result.push('\t'),
-                                    'r' => result.push('\r'),
-                                    other => {
-                                        result.push('\\');
-                                        result.push(other);
-                                    }
-                                }
-                            } else {
-                                result.push('\\');
-                            }
-                        } else {
-                            result.push(ch);
-                        }
-                    }
-
-                    if !closed {
-                        // If quote wasn't closed properly, fallback to trimmed string
-                        val_str
-                            .trim_start_matches('\'')
-                            .trim_end_matches('\'')
-                            .to_string()
-                    } else {
-                        result
-                    }
-                } else {
-                    // Unquoted value: strip trailing comment if any
-                    let no_comment = if let Some((before_comment, _)) = val_str.split_once('#') {
-                        before_comment.trim()
-                    } else {
-                        val_str
-                    };
-                    no_comment.to_string()
-                };
-
-                entries.insert(key, parsed_val);
-            }
-        }
-
-        entries
+        Self::new(control_file_name, &control_file_body)
     }
 
     // Name of the extension. Used in the `create extension <extension_name>`
-    pub fn extension_name(&self) -> anyhow::Result<String> {
+    fn extension_name(&self) -> anyhow::Result<String> {
         self.filename
             .strip_suffix(".control")
             .context("failed to read extension name from control file")
@@ -327,78 +341,74 @@ impl ControlFileRef {
     }
 
     // A comment (any string) about the extension.
-    pub fn comment(&self) -> anyhow::Result<Option<String>> {
-        let entries = self.parse_entries();
-        Ok(entries.get("comment").cloned())
+    fn comment(&self) -> Option<String> {
+        self.entries.get("comment").cloned()
     }
 
     // A list of names of extensions that this extension depends on
-    pub fn requires(&self) -> anyhow::Result<Vec<String>> {
-        let entries = self.parse_entries();
-        if let Some(val) = entries.get("requires") {
-            let required_packages: Vec<String> = val
+    fn requires(&self) -> Vec<String> {
+        match self.entries.get("requires") {
+            Some(val) => val
                 .split(',')
                 .map(|x| x.trim().to_string())
                 .filter(|x| !x.is_empty())
-                .collect();
-            Ok(required_packages)
-        } else {
-            Ok(vec![])
+                .collect(),
+            None => vec![],
         }
     }
 
     // The schema the extension wants to be installed in, if any
-    pub fn schema(&self) -> anyhow::Result<Option<String>> {
-        let entries = self.parse_entries();
-        Ok(entries.get("schema").cloned())
+    fn schema(&self) -> Option<String> {
+        self.entries.get("schema").cloned()
     }
 
     // The home repository or homepage URL for the extension
-    pub fn repository(&self) -> anyhow::Result<Option<String>> {
-        let entries = self.parse_entries();
-        Ok(entries
+    fn repository(&self) -> Option<String> {
+        self.entries
             .get("repository")
-            .or_else(|| entries.get("homepage"))
-            .or_else(|| entries.get("repository_url"))
-            .cloned())
+            .or_else(|| self.entries.get("homepage"))
+            .or_else(|| self.entries.get("repository_url"))
+            .cloned()
     }
 
-    pub fn relocatable(&self) -> anyhow::Result<bool> {
-        let entries = self.parse_entries();
-        if let Some(val) = entries.get("relocatable") {
-            match val.to_lowercase().as_str() {
+    fn relocatable(&self) -> anyhow::Result<bool> {
+        match self.entries.get("relocatable") {
+            Some(val) => match val.to_lowercase().as_str() {
                 "true" | "yes" | "on" | "1" => Ok(true),
                 "false" | "no" | "off" | "0" => Ok(false),
-                other => other.parse::<bool>().context("invalid boolean for relocatable"),
-            }
-        } else {
-            Ok(false)
+                other => other
+                    .parse::<bool>()
+                    .context("invalid boolean for relocatable"),
+            },
+            None => Ok(false),
         }
     }
 
-    pub fn default_version(&self) -> anyhow::Result<String> {
-        let entries = self.parse_entries();
-        if let Some(val) = entries.get("default_version") {
-            if !val.is_empty() {
-                return Ok(val.clone());
-            }
+    fn default_version(&self) -> anyhow::Result<String> {
+        match self.entries.get("default_version") {
+            Some(val) if !val.is_empty() => Ok(val.clone()),
+            _ => Err(anyhow::anyhow!(
+                "`default_version` in control file is required"
+            )),
         }
-        Err(anyhow::anyhow!(
-            "`default_version` in control file is required"
-        ))
     }
 }
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn control_file(contents: &str) -> anyhow::Result<ControlFileRef> {
+        ControlFileRef::new("my_ext.control".to_string(), contents)
+    }
 
     #[test]
     fn test_control_file_parsing_robust() {
         let control_content = r#"
             # PostgreSQL extension control file
             # Comment line with leading spaces
-            comment = 'A great extension with \'escaped\' quotes' # inline comment
+            comment = 'A great extension with ''escaped'' quotes' # inline comment
             default_version = '1.2.3'
             relocatable = true
             requires = 'pg_net,  supabase_vault , pg_graphql'
@@ -406,25 +416,22 @@ mod tests {
             repository = 'https://github.com/supabase/my_ext'
         "#;
 
-        let control_file = ControlFileRef {
-            filename: "my_ext.control".to_string(),
-            contents: control_content.to_string(),
-        };
+        let control_file = control_file(control_content).unwrap();
 
         assert_eq!(control_file.extension_name().unwrap(), "my_ext");
         assert_eq!(
-            control_file.comment().unwrap().unwrap(),
+            control_file.comment().unwrap(),
             "A great extension with 'escaped' quotes"
         );
         assert_eq!(control_file.default_version().unwrap(), "1.2.3");
         assert_eq!(control_file.relocatable().unwrap(), true);
         assert_eq!(
-            control_file.requires().unwrap(),
+            control_file.requires(),
             vec!["pg_net", "supabase_vault", "pg_graphql"]
         );
-        assert_eq!(control_file.schema().unwrap().unwrap(), "public");
+        assert_eq!(control_file.schema().unwrap(), "public");
         assert_eq!(
-            control_file.repository().unwrap().unwrap(),
+            control_file.repository().unwrap(),
             "https://github.com/supabase/my_ext"
         );
     }
@@ -443,11 +450,47 @@ mod tests {
         ];
 
         for (line, expected) in bool_tests {
-            let cf = ControlFileRef {
-                filename: "ext.control".to_string(),
-                contents: format!("default_version = '1.0.0'\n{}", line),
-            };
+            let cf = control_file(&format!("default_version = '1.0.0'\n{}", line)).unwrap();
             assert_eq!(cf.relocatable().unwrap(), expected, "Failed for {}", line);
         }
+    }
+
+    // guc-file.l treats `=` as optional between a parameter and its value.
+    #[test]
+    fn test_equals_sign_is_optional() {
+        let cf = control_file("default_version '1.0.0'\nschema 'public'").unwrap();
+
+        assert_eq!(cf.default_version().unwrap(), "1.0.0");
+        assert_eq!(cf.schema().unwrap(), "public");
+    }
+
+    // guc-file.l's xqescape emits the character after the backslash verbatim,
+    // so `\n` is the letter n rather than a newline.
+    #[test]
+    fn test_backslash_escapes_are_literal() {
+        let cf = control_file(r#"comment = 'line\none\ttwo\\three\'four'"#).unwrap();
+
+        assert_eq!(cf.comment().unwrap(), r#"linenonettwo\three'four"#);
+    }
+
+    // An unterminated quote is an error in guc-file.l, not a value to salvage.
+    #[test]
+    fn test_unterminated_quote_is_an_error() {
+        let err = control_file("comment = 'never closed").unwrap_err();
+
+        assert!(
+            err.to_string().contains("unterminated quoted value"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    // A `#` inside a quoted value is content; outside one it starts a comment.
+    #[test]
+    fn test_comment_handling() {
+        let cf = control_file("comment = 'has # inside'\nschema = public # trailing").unwrap();
+
+        assert_eq!(cf.comment().unwrap(), "has # inside");
+        assert_eq!(cf.schema().unwrap(), "public");
     }
 }

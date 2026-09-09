@@ -32,9 +32,11 @@ ALTER EXTENSION my_ext UPDATE TO '1.1.0';
 
 ### How do I un-publish or deprecate a package/version?
 
-Once an extension version is published to dbdev, it is immutable by design so that other projects depending on that exact version in their migrations do not break. 
+Once an extension version is published to dbdev, it is immutable by design so that other projects depending on that exact version in their migrations do not break.
 
-To discourage usage of a broken or superseded release, you can deprecate the package by releasing an updated version or marking the repository metadata.
+There is currently no self-service un-publish or deprecate command, and no `dbdev` CLI flag that removes a published version. If you have published something you need taken down, [open an issue on `supabase/dbdev`](https://github.com/supabase/dbdev/issues) and ask the maintainers to remove it.
+
+To steer users away from a broken release in the meantime, publish a fixed version and set it as `default_version` in your `.control` file. New installs pick up the default; existing pins are unaffected.
 
 ---
 

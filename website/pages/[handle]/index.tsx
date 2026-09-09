@@ -11,11 +11,7 @@ import {
   prefetchPackages,
   usePackagesQuery,
 } from '~/data/packages/packages-query'
-import {
-  getProfile,
-  prefetchProfile,
-  useProfileQuery,
-} from '~/data/profiles/profile-query'
+import { getProfile, useProfileQuery } from '~/data/profiles/profile-query'
 import { getAllProfiles } from '~/data/static-path-queries'
 import { NotFoundError } from '~/data/utils'
 import { useUser } from '~/lib/auth'
@@ -29,11 +25,7 @@ const AccountPage: NextPageWithLayout = () => {
   const router = useRouter()
   const user = useUser()
   const { handle } = useParams()
-  const {
-    data: profile,
-    isError,
-    error,
-  } = useProfileQuery({ handle })
+  const { data: profile, isError } = useProfileQuery({ handle })
   const { data: packages, isSuccess: isPackagesSuccess } = usePackagesQuery({
     handle,
   })
@@ -42,9 +34,6 @@ const AccountPage: NextPageWithLayout = () => {
   })
 
   if (isError) {
-    if (error instanceof NotFoundError) {
-      return <FourOhFourPage title="User or organization not found" />
-    }
     return <FourOhFourPage title="User or organization not found" />
   }
 
@@ -127,6 +116,8 @@ export const getStaticProps: GetStaticProps = async ({ params }) => {
 
     try {
       await Promise.all([
+        // fetchQuery, not prefetchProfile: prefetchQuery swallows the
+        // NotFoundError this catch needs to turn into a 404.
         queryClient.fetchQuery({
           queryKey: ['profile', handle],
           queryFn: ({ signal }) => getProfile({ handle }, signal),

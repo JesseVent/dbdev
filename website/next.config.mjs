@@ -13,6 +13,17 @@ const cspHeader = `
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  async redirects() {
+    return [
+      // Without this, /faq resolves against the /[handle] route and renders a
+      // profile page for a user named "faq".
+      {
+        source: '/faq',
+        destination: '/docs/faq',
+        permanent: false,
+      },
+    ]
+  },
   async headers() {
     return [
       {
